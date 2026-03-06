@@ -32,8 +32,19 @@ TRANSCRIPT_LIMITS = {
     "deep": 8,
 }
 
-# Max words to keep from each transcript
-TRANSCRIPT_MAX_WORDS = 500
+# Full transcript limits: how many videos get full (untrimmed) transcripts
+TRANSCRIPT_LIMITS_FULL = {
+    "quick": 5,
+    "default": 10,
+    "deep": 40,
+}
+
+# Max words to keep from each transcript (~1.3 tokens/word for spoken English)
+TRANSCRIPT_MAX_WORDS = {
+    "quick": 500,
+    "default": 500,
+    "deep": 3850,  # ~5000 tokens at 1.3 tokens/word
+}
 
 
 def _log(msg: str):
@@ -223,12 +234,13 @@ def _clean_vtt(vtt_text: str) -> str:
     return re.sub(r'\s+', ' ', ' '.join(unique)).strip()
 
 
-def fetch_transcript(video_id: str, temp_dir: str) -> Optional[str]:
+def fetch_transcript(video_id: str, temp_dir: str, max_words: int = 500) -> Optional[str]:
     """Fetch auto-generated transcript for a YouTube video.
 
     Args:
         video_id: YouTube video ID
         temp_dir: Temporary directory for subtitle files
+        max_words: Max words to keep from transcript
 
     Returns:
         Plaintext transcript string, or None if no captions available.
@@ -283,10 +295,11 @@ def fetch_transcript(video_id: str, temp_dir: str) -> Optional[str]:
 
     transcript = _clean_vtt(raw)
 
-    # Truncate to max words
-    words = transcript.split()
-    if len(words) > TRANSCRIPT_MAX_WORDS:
-        transcript = ' '.join(words[:TRANSCRIPT_MAX_WORDS]) + '...'
+    # Truncate to max words (if max_words is set)
+    if max_words is not None:
+        words = transcript.split()
+        if len(words) > max_words:
+            transcript = ' '.join(words[:max_words]) + '...'
 
     return transcript if transcript else None
 
@@ -294,12 +307,14 @@ def fetch_transcript(video_id: str, temp_dir: str) -> Optional[str]:
 def fetch_transcripts_parallel(
     video_ids: List[str],
     max_workers: int = 5,
+    max_words: int = 500,
 ) -> Dict[str, Optional[str]]:
     """Fetch transcripts for multiple videos in parallel.
 
     Args:
         video_ids: List of YouTube video IDs
         max_workers: Max parallel fetches
+        max_words: Max words to keep per transcript
 
     Returns:
         Dict mapping video_id to transcript text (or None).
@@ -313,7 +328,7 @@ def fetch_transcripts_parallel(
     with tempfile.TemporaryDirectory() as temp_dir:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
-                executor.submit(fetch_transcript, vid, temp_dir): vid
+                executor.submit(fetch_transcript, vid, temp_dir, max_words): vid
                 for vid in video_ids
             }
             for future in as_completed(futures):
@@ -333,6 +348,7 @@ def search_and_transcribe(
     from_date: str,
     to_date: str,
     depth: str = "default",
+    fetch_full_transcripts: bool = False,
 ) -> Dict[str, Any]:
     """Full YouTube search: find videos, then fetch transcripts for top results.
 
@@ -341,9 +357,11 @@ def search_and_transcribe(
         from_date: Start date (YYYY-MM-DD)
         to_date: End date (YYYY-MM-DD)
         depth: 'quick', 'default', or 'deep'
+        fetch_full_transcripts: If True, also fetch full (untrimmed) transcripts
 
     Returns:
-        Dict with 'items' list. Each item has a 'transcript_snippet' field.
+        Dict with 'items' list. Each item has 'transcript_snippet' and
+        optionally 'transcript_full' fields.
     """
     # Step 1: Search
     search_result = search_youtube(topic, from_date, to_date, depth)
@@ -354,14 +372,26 @@ def search_and_transcribe(
 
     # Step 2: Fetch transcripts for top N by views
     transcript_limit = TRANSCRIPT_LIMITS.get(depth, TRANSCRIPT_LIMITS["default"])
+    max_words = TRANSCRIPT_MAX_WORDS.get(depth, TRANSCRIPT_MAX_WORDS["default"])
     top_ids = [item["video_id"] for item in items[:transcript_limit]]
-    transcripts = fetch_transcripts_parallel(top_ids)
+    transcripts = fetch_transcripts_parallel(top_ids, max_words=max_words)
 
     # Step 3: Attach transcripts to items
     for item in items:
         vid = item["video_id"]
         transcript = transcripts.get(vid)
         item["transcript_snippet"] = transcript or ""
+
+    # Step 4: Fetch full transcripts if requested (for raw data output)
+    if fetch_full_transcripts:
+        full_limit = TRANSCRIPT_LIMITS_FULL.get(depth, TRANSCRIPT_LIMITS_FULL["default"])
+        full_ids = [item["video_id"] for item in items[:full_limit]]
+        # Only fetch full for videos we haven't already fetched with no truncation
+        full_transcripts = fetch_transcripts_parallel(full_ids, max_words=None)
+        for item in items:
+            vid = item["video_id"]
+            full_transcript = full_transcripts.get(vid)
+            item["transcript_full"] = full_transcript or ""
 
     return {"items": items}
 

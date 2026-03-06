@@ -185,13 +185,14 @@ class YouTubeItem:
     date_confidence: str = "high"  # YouTube dates are always reliable
     engagement: Optional[Engagement] = None
     transcript_snippet: str = ""
+    transcript_full: str = ""
     relevance: float = 0.7
     why_relevant: str = ""
     subs: SubScores = field(default_factory=SubScores)
     score: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             'id': self.id,
             'title': self.title,
             'url': self.url,
@@ -205,6 +206,48 @@ class YouTubeItem:
             'subs': self.subs.to_dict(),
             'score': self.score,
         }
+        if self.transcript_full:
+            d['transcript_full'] = self.transcript_full
+        return d
+
+
+@dataclass
+class PodcastItem:
+    """Normalized podcast episode item."""
+    id: str
+    title: str
+    url: str
+    podcast_name: str
+    episode_title: str
+    date: Optional[str] = None
+    date_confidence: str = "med"
+    engagement: Optional[Engagement] = None
+    transcript_snippet: str = ""
+    transcript_full: str = ""
+    relevance: float = 0.6
+    why_relevant: str = ""
+    subs: SubScores = field(default_factory=SubScores)
+    score: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = {
+            'id': self.id,
+            'title': self.title,
+            'url': self.url,
+            'podcast_name': self.podcast_name,
+            'episode_title': self.episode_title,
+            'date': self.date,
+            'date_confidence': self.date_confidence,
+            'engagement': self.engagement.to_dict() if self.engagement else None,
+            'transcript_snippet': self.transcript_snippet,
+            'relevance': self.relevance,
+            'why_relevant': self.why_relevant,
+            'subs': self.subs.to_dict(),
+            'score': self.score,
+        }
+        if self.transcript_full:
+            d['transcript_full'] = self.transcript_full
+        return d
 
 
 @dataclass
@@ -221,6 +264,7 @@ class Report:
     x: List[XItem] = field(default_factory=list)
     web: List[WebSearchItem] = field(default_factory=list)
     youtube: List[YouTubeItem] = field(default_factory=list)
+    podcast: List[PodcastItem] = field(default_factory=list)
     best_practices: List[str] = field(default_factory=list)
     prompt_pack: List[str] = field(default_factory=list)
     context_snippet_md: str = ""
@@ -229,6 +273,7 @@ class Report:
     x_error: Optional[str] = None
     web_error: Optional[str] = None
     youtube_error: Optional[str] = None
+    podcast_error: Optional[str] = None
     # Cache info
     from_cache: bool = False
     cache_age_hours: Optional[float] = None
@@ -248,6 +293,7 @@ class Report:
             'x': [x.to_dict() for x in self.x],
             'web': [w.to_dict() for w in self.web],
             'youtube': [y.to_dict() for y in self.youtube],
+            'podcast': [p.to_dict() for p in self.podcast],
             'best_practices': self.best_practices,
             'prompt_pack': self.prompt_pack,
             'context_snippet_md': self.context_snippet_md,
@@ -260,6 +306,8 @@ class Report:
             d['web_error'] = self.web_error
         if self.youtube_error:
             d['youtube_error'] = self.youtube_error
+        if self.podcast_error:
+            d['podcast_error'] = self.podcast_error
         if self.from_cache:
             d['from_cache'] = self.from_cache
         if self.cache_age_hours is not None:
@@ -353,10 +401,35 @@ class Report:
                 date_confidence=y.get('date_confidence', 'high'),
                 engagement=eng,
                 transcript_snippet=y.get('transcript_snippet', ''),
+                transcript_full=y.get('transcript_full', ''),
                 relevance=y.get('relevance', 0.7),
                 why_relevant=y.get('why_relevant', ''),
                 subs=subs,
                 score=y.get('score', 0),
+            ))
+
+        # Reconstruct Podcast items
+        podcast_items = []
+        for p in data.get('podcast', []):
+            eng = None
+            if p.get('engagement'):
+                eng = Engagement(**p['engagement'])
+            subs = SubScores(**p.get('subs', {})) if p.get('subs') else SubScores()
+            podcast_items.append(PodcastItem(
+                id=p['id'],
+                title=p['title'],
+                url=p['url'],
+                podcast_name=p.get('podcast_name', ''),
+                episode_title=p.get('episode_title', ''),
+                date=p.get('date'),
+                date_confidence=p.get('date_confidence', 'med'),
+                engagement=eng,
+                transcript_snippet=p.get('transcript_snippet', ''),
+                transcript_full=p.get('transcript_full', ''),
+                relevance=p.get('relevance', 0.6),
+                why_relevant=p.get('why_relevant', ''),
+                subs=subs,
+                score=p.get('score', 0),
             ))
 
         return cls(
@@ -371,6 +444,7 @@ class Report:
             x=x_items,
             web=web_items,
             youtube=youtube_items,
+            podcast=podcast_items,
             best_practices=data.get('best_practices', []),
             prompt_pack=data.get('prompt_pack', []),
             context_snippet_md=data.get('context_snippet_md', ''),
@@ -378,6 +452,7 @@ class Report:
             x_error=data.get('x_error'),
             web_error=data.get('web_error'),
             youtube_error=data.get('youtube_error'),
+            podcast_error=data.get('podcast_error'),
             from_cache=data.get('from_cache', False),
             cache_age_hours=data.get('cache_age_hours'),
         )

@@ -337,7 +337,53 @@ def score_websearch_items(items: List[schema.WebSearchItem]) -> List[schema.WebS
     return items
 
 
-def sort_items(items: List[Union[schema.RedditItem, schema.XItem, schema.WebSearchItem, schema.YouTubeItem]]) -> List:
+def score_podcast_items(items: List[schema.PodcastItem]) -> List[schema.PodcastItem]:
+    """Compute scores for podcast items.
+
+    Uses reweighted formula: 60% relevance + 25% recency + 15% engagement bonus.
+    Podcasts typically lack standard engagement metrics.
+
+    Args:
+        items: List of PodcastItem objects
+
+    Returns:
+        Items with updated scores
+    """
+    if not items:
+        return items
+
+    for item in items:
+        rel_score = int(item.relevance * 100)
+        rec_score = dates.recency_score(item.date)
+
+        # Engagement bonus from any available metrics
+        eng_score = DEFAULT_ENGAGEMENT
+        if item.engagement:
+            if item.engagement.views is not None:
+                eng_score = min(100, int(log1p_safe(item.engagement.views) * 10))
+
+        item.subs = schema.SubScores(
+            relevance=rel_score,
+            recency=rec_score,
+            engagement=eng_score,
+        )
+
+        overall = (
+            0.60 * rel_score +
+            0.25 * rec_score +
+            0.15 * eng_score
+        )
+
+        # Penalty for low date confidence
+        if item.date_confidence == "low":
+            overall -= 5
+
+        item.score = max(0, min(100, int(overall)))
+
+    return items
+
+
+def sort_items(items: List[Union[schema.RedditItem, schema.XItem, schema.WebSearchItem, schema.YouTubeItem, schema.PodcastItem]]) -> List:
     """Sort items by score (descending), then date, then source priority.
 
     Args:
@@ -354,15 +400,17 @@ def sort_items(items: List[Union[schema.RedditItem, schema.XItem, schema.WebSear
         date = item.date or "0000-00-00"
         date_key = -int(date.replace("-", ""))
 
-        # Tertiary: source priority (Reddit > X > YouTube > WebSearch)
+        # Tertiary: source priority (Reddit > X > YouTube > Podcast > WebSearch)
         if isinstance(item, schema.RedditItem):
             source_priority = 0
         elif isinstance(item, schema.XItem):
             source_priority = 1
         elif isinstance(item, schema.YouTubeItem):
             source_priority = 2
-        else:  # WebSearchItem
+        elif isinstance(item, schema.PodcastItem):
             source_priority = 3
+        else:  # WebSearchItem
+            source_priority = 4
 
         # Quaternary: title/text for stability
         text = getattr(item, "title", "") or getattr(item, "text", "")

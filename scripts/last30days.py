@@ -23,6 +23,7 @@ import os
 import signal
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -96,6 +97,7 @@ def _install_global_timeout(timeout_seconds: int):
 
 from lib import (
     bird_x,
+    brave_reddit,
     dates,
     dedupe,
     entity_extract,
@@ -104,10 +106,13 @@ from lib import (
     models,
     normalize,
     openai_reddit,
+    podcast_search,
     reddit_enrich,
     render,
     schema,
     score,
+    tavily_reddit,
+    tavily_search,
     ui,
     websearch,
     xai_x,
@@ -133,7 +138,10 @@ def _search_reddit(
     depth: str,
     mock: bool,
 ) -> tuple:
-    """Search Reddit via OpenAI (runs in thread).
+    """Search Reddit via Tavily (preferred), Brave (fallback), or OpenAI (last resort).
+
+    Tavily is preferred because it provides better results with domain filtering.
+    Brave is kept as a fallback. OpenAI is the last resort.
 
     Returns:
         Tuple of (reddit_items, raw_openai, error)
@@ -143,7 +151,41 @@ def _search_reddit(
 
     if mock:
         raw_openai = load_fixture("openai_sample.json")
-    else:
+        reddit_items = openai_reddit.parse_reddit_response(raw_openai or {})
+        return reddit_items, raw_openai, reddit_error
+
+    # Prefer Tavily for Reddit discovery
+    tavily_key = config.get("TAVILY_API_KEY")
+    if tavily_key:
+        try:
+            reddit_items = tavily_reddit.search_reddit(
+                tavily_key, topic, from_date, to_date, depth=depth,
+            )
+            return reddit_items, {"source": "tavily_reddit"}, reddit_error
+        except http.HTTPError as e:
+            sys.stderr.write(f"[Reddit/Tavily] Failed ({e}), falling back to Brave\n")
+            sys.stderr.flush()
+        except Exception as e:
+            sys.stderr.write(f"[Reddit/Tavily] Error ({e}), falling back to Brave\n")
+            sys.stderr.flush()
+
+    # Fallback: Brave Search
+    brave_key = config.get("BRAVE_API_KEY")
+    if brave_key:
+        try:
+            reddit_items = brave_reddit.search_reddit(
+                brave_key, topic, from_date, to_date, depth=depth,
+            )
+            return reddit_items, {"source": "brave_reddit"}, reddit_error
+        except http.HTTPError as e:
+            sys.stderr.write(f"[Reddit/Brave] Failed ({e}), falling back to OpenAI\n")
+            sys.stderr.flush()
+        except Exception as e:
+            sys.stderr.write(f"[Reddit/Brave] Error ({e}), falling back to OpenAI\n")
+            sys.stderr.flush()
+
+    # Fallback: OpenAI Responses API
+    if config.get("OPENAI_API_KEY"):
         try:
             raw_openai = openai_reddit.search_reddit(
                 config["OPENAI_API_KEY"],
@@ -160,50 +202,33 @@ def _search_reddit(
             raw_openai = {"error": str(e)}
             reddit_error = f"{type(e).__name__}: {e}"
 
-    # Parse response
-    reddit_items = openai_reddit.parse_reddit_response(raw_openai or {})
+        reddit_items = openai_reddit.parse_reddit_response(raw_openai or {})
 
-    # Quick retry with simpler query if few results
-    if len(reddit_items) < 5 and not mock and not reddit_error:
-        core = openai_reddit._extract_core_subject(topic)
-        if core.lower() != topic.lower():
-            try:
-                retry_raw = openai_reddit.search_reddit(
-                    config["OPENAI_API_KEY"],
-                    selected_models["openai"],
-                    core,
-                    from_date, to_date,
-                    depth=depth,
-                )
-                retry_items = openai_reddit.parse_reddit_response(retry_raw)
-                # Add items not already found (by URL)
-                existing_urls = {item.get("url") for item in reddit_items}
-                for item in retry_items:
-                    if item.get("url") not in existing_urls:
-                        reddit_items.append(item)
-            except Exception:
-                pass
+        # Quick retry with simpler query if few results
+        if len(reddit_items) < 5 and not reddit_error:
+            core = openai_reddit._extract_core_subject(topic)
+            if core.lower() != topic.lower():
+                try:
+                    retry_raw = openai_reddit.search_reddit(
+                        config["OPENAI_API_KEY"],
+                        selected_models["openai"],
+                        core,
+                        from_date, to_date,
+                        depth=depth,
+                    )
+                    retry_items = openai_reddit.parse_reddit_response(retry_raw)
+                    existing_urls = {item.get("url") for item in reddit_items}
+                    for item in retry_items:
+                        if item.get("url") not in existing_urls:
+                            reddit_items.append(item)
+                except Exception:
+                    pass
 
-    # Subreddit-targeted fallback if still < 3 results
-    if len(reddit_items) < 3 and not mock and not reddit_error:
-        sub_query = openai_reddit._build_subreddit_query(topic)
-        try:
-            sub_raw = openai_reddit.search_reddit(
-                config["OPENAI_API_KEY"],
-                selected_models["openai"],
-                sub_query,
-                from_date, to_date,
-                depth=depth,
-            )
-            sub_items = openai_reddit.parse_reddit_response(sub_raw)
-            existing_urls = {item.get("url") for item in reddit_items}
-            for item in sub_items:
-                if item.get("url") not in existing_urls:
-                    reddit_items.append(item)
-        except Exception:
-            pass
+        return reddit_items, raw_openai, reddit_error
 
-    return reddit_items, raw_openai, reddit_error
+    # No search backend available
+    reddit_error = "No Reddit search backend available (need TAVILY_API_KEY, BRAVE_API_KEY, or OPENAI_API_KEY)"
+    return [], None, reddit_error
 
 
 def _search_x(
@@ -332,6 +357,10 @@ def _search_web(
             raw_results = parallel_search.search_web(
                 topic, from_date, to_date, config["PARALLEL_API_KEY"], depth=depth,
             )
+        elif backend == "tavily":
+            raw_results = tavily_search.search_web(
+                topic, from_date, to_date, config["TAVILY_API_KEY"], depth=depth,
+            )
         elif backend == "brave":
             raw_results = brave_search.search_web(
                 topic, from_date, to_date, config["BRAVE_API_KEY"], depth=depth,
@@ -355,6 +384,39 @@ def _search_web(
     return raw_results, web_error
 
 
+def _search_podcast(
+    topic: str,
+    config: dict,
+    from_date: str,
+    to_date: str,
+    depth: str,
+) -> tuple:
+    """Search for podcast episodes (runs in thread).
+
+    Uses Tavily for discovery and Listen Notes for enrichment.
+
+    Returns:
+        Tuple of (podcast_items, podcast_error)
+    """
+    tavily_key = config.get("TAVILY_API_KEY")
+    if not tavily_key:
+        return [], "No TAVILY_API_KEY for podcast discovery"
+
+    listen_notes_key = config.get("LISTEN_NOTES_API_KEY")
+
+    try:
+        podcast_items = podcast_search.search_podcasts(
+            topic, from_date, to_date,
+            tavily_key=tavily_key,
+            listen_notes_key=listen_notes_key,
+            depth=depth,
+        )
+    except Exception as e:
+        return [], f"{type(e).__name__}: {e}"
+
+    return podcast_items, None
+
+
 def _run_supplemental(
     topic: str,
     reddit_items: list,
@@ -365,6 +427,7 @@ def _run_supplemental(
     x_source: str,
     progress: ui.ProgressDisplay = None,
     skip_reddit: bool = False,
+    config: dict = None,
 ) -> tuple:
     """Run Phase 2 supplemental searches based on entities from Phase 1.
 
@@ -403,7 +466,9 @@ def _run_supplemental(
     )
 
     has_handles = entities["x_handles"] and x_source == "bird"
-    has_subs = entities["reddit_subreddits"] and not skip_reddit
+    tavily_key = (config or {}).get("TAVILY_API_KEY", "")
+    brave_key = (config or {}).get("BRAVE_API_KEY", "")
+    has_subs = entities["reddit_subreddits"] and not skip_reddit and (tavily_key or brave_key)
 
     if not has_handles and not has_subs:
         return [], []
@@ -432,14 +497,26 @@ def _run_supplemental(
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         if has_subs:
-            reddit_future = executor.submit(
-                openai_reddit.search_subreddits,
-                entities["reddit_subreddits"],
-                topic,
-                from_date,
-                to_date,
-                count_per,
-            )
+            if tavily_key:
+                reddit_future = executor.submit(
+                    tavily_reddit.search_subreddits,
+                    tavily_key,
+                    entities["reddit_subreddits"],
+                    topic,
+                    from_date,
+                    to_date,
+                    count_per,
+                )
+            else:
+                reddit_future = executor.submit(
+                    brave_reddit.search_subreddits,
+                    brave_key,
+                    entities["reddit_subreddits"],
+                    topic,
+                    from_date,
+                    to_date,
+                    count_per,
+                )
 
         if has_handles:
             x_future = executor.submit(
@@ -496,14 +573,15 @@ def run_research(
     progress: ui.ProgressDisplay = None,
     x_source: str = "xai",
     run_youtube: bool = False,
+    run_podcast: bool = False,
     timeouts: dict = None,
 ) -> tuple:
     """Run the research pipeline.
 
     Returns:
-        Tuple of (reddit_items, x_items, youtube_items, web_items, web_needed,
+        Tuple of (reddit_items, x_items, youtube_items, podcast_items, web_items, web_needed,
                   raw_openai, raw_xai, raw_reddit_enriched,
-                  reddit_error, x_error, youtube_error, web_error)
+                  reddit_error, x_error, youtube_error, podcast_error, web_error)
 
     Note: web_needed is True when web search should be performed by the assistant
     (i.e., no native web search API keys are configured). When native web search
@@ -516,6 +594,7 @@ def run_research(
     reddit_items = []
     x_items = []
     youtube_items = []
+    podcast_items = []
     web_items = []
     raw_openai = None
     raw_xai = None
@@ -523,6 +602,7 @@ def run_research(
     reddit_error = None
     x_error = None
     youtube_error = None
+    podcast_error = None
     web_error = None
 
     # Determine web search mode
@@ -565,18 +645,19 @@ def run_research(
                     progress.show_error(f"YouTube error: {e}")
             if progress:
                 progress.end_youtube(len(youtube_items))
-        return reddit_items, x_items, youtube_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, web_error
+        return reddit_items, x_items, youtube_items, podcast_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, podcast_error, web_error
 
     # Determine which searches to run
     do_reddit = sources in ("both", "reddit", "all", "reddit-web")
     do_x = sources in ("both", "x", "all", "x-web")
 
-    # Run Reddit, X, YouTube, and Web searches in parallel
+    # Run Reddit, X, YouTube, Podcast, and Web searches in parallel
     reddit_future = None
     x_future = None
     youtube_future = None
+    podcast_future = None
     web_future = None
-    max_workers = 2 + (1 if run_youtube else 0) + (1 if web_backend else 0)
+    max_workers = 2 + (1 if run_youtube else 0) + (1 if run_podcast else 0) + (1 if web_backend else 0)
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Submit searches
@@ -601,6 +682,11 @@ def run_research(
                 progress.start_youtube()
             youtube_future = executor.submit(
                 _search_youtube, topic, from_date, to_date, depth
+            )
+
+        if run_podcast:
+            podcast_future = executor.submit(
+                _search_podcast, topic, config, from_date, to_date, depth
             )
 
         if web_backend:
@@ -661,6 +747,22 @@ def run_research(
             if progress:
                 progress.end_youtube(len(youtube_items))
 
+        if podcast_future:
+            try:
+                podcast_items, podcast_error = podcast_future.result(timeout=future_timeout)
+                if podcast_error and progress:
+                    progress.show_error(f"Podcast error: {podcast_error}")
+            except TimeoutError:
+                podcast_error = f"Podcast search timed out after {future_timeout}s"
+                if progress:
+                    progress.show_error(podcast_error)
+            except Exception as e:
+                podcast_error = f"{type(e).__name__}: {e}"
+                if progress:
+                    progress.show_error(f"Podcast error: {e}")
+            sys.stderr.write(f"[Podcast] {len(podcast_items)} episodes\n")
+            sys.stderr.flush()
+
         if web_future:
             try:
                 web_items, web_error = web_future.result(timeout=future_timeout)
@@ -704,11 +806,12 @@ def run_research(
             # Uses short HTTP timeout (10s) and 1 retry to fail fast on 429
             completed_count = 0
             rate_limited = False
-            with ThreadPoolExecutor(max_workers=5) as enrich_pool:
-                futures = {
-                    enrich_pool.submit(reddit_enrich.enrich_reddit_item, item): i
-                    for i, item in enumerate(items_to_enrich)
-                }
+            with ThreadPoolExecutor(max_workers=2) as enrich_pool:
+                futures = {}
+                for i, item in enumerate(items_to_enrich):
+                    futures[enrich_pool.submit(reddit_enrich.enrich_reddit_item, item)] = i
+                    if i < len(items_to_enrich) - 1:
+                        time.sleep(0.5)  # 500ms stagger to avoid Reddit 429
                 try:
                     for future in as_completed(futures, timeout=enrich_total_timeout):
                         idx = futures[future]
@@ -754,13 +857,14 @@ def run_research(
             topic, reddit_items, x_items,
             from_date, to_date, depth, x_source, progress,
             skip_reddit=rate_limited,
+            config=config,
         )
         if sup_reddit:
             reddit_items.extend(sup_reddit)
         if sup_x:
             x_items.extend(sup_x)
 
-    return reddit_items, x_items, youtube_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, web_error
+    return reddit_items, x_items, youtube_items, podcast_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, podcast_error, web_error
 
 
 def main():
@@ -860,6 +964,11 @@ def main():
     # Load config
     config = env.get_config()
 
+    # Export Bird credentials to os.environ so Bird subprocess inherits them
+    for _bird_key in ('AUTH_TOKEN', 'CT0'):
+        if config.get(_bird_key) and not os.environ.get(_bird_key):
+            os.environ[_bird_key] = config[_bird_key]
+
     # Auto-detect Bird (no prompts - just use it if available)
     x_source_status = env.get_x_source_status(config)
     x_source = x_source_status["source"]  # 'bird', 'xai', or None
@@ -880,8 +989,10 @@ def main():
             "youtube": has_ytdlp,
             "web_search_backend": web_source,
             "parallel_ai": bool(config.get("PARALLEL_API_KEY")),
+            "tavily": bool(config.get("TAVILY_API_KEY")),
             "brave": bool(config.get("BRAVE_API_KEY")),
             "openrouter": bool(config.get("OPENROUTER_API_KEY")),
+            "listen_notes": bool(config.get("LISTEN_NOTES_API_KEY")),
         }
         print(json.dumps(diag, indent=2))
         sys.exit(0)
@@ -916,8 +1027,10 @@ def main():
     if x_source == 'bird':
         if available == 'reddit':
             available = 'both'  # Now have both Reddit + X (via Bird)
+        elif available == 'reddit-web':
+            available = 'all'  # Now have Reddit + X (via Bird) + Web
         elif available == 'web':
-            available = 'x'  # Now have X via Bird
+            available = 'x-web'  # Now have X via Bird + Web
 
     # Mock mode can work without keys
     if args.mock:
@@ -981,8 +1094,11 @@ def main():
     else:
         mode = sources
 
+    # Auto-detect podcast capability (needs Tavily key)
+    has_podcast = bool(config.get("TAVILY_API_KEY"))
+
     # Run research
-    reddit_items, x_items, youtube_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, web_error = run_research(
+    reddit_items, x_items, youtube_items, podcast_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, podcast_error, web_error = run_research(
         args.topic,
         sources,
         config,
@@ -994,6 +1110,7 @@ def main():
         progress,
         x_source=x_source or "xai",
         run_youtube=has_ytdlp,
+        run_podcast=has_podcast,
         timeouts=timeouts,
     )
 
@@ -1004,6 +1121,7 @@ def main():
     normalized_reddit = normalize.normalize_reddit_items(reddit_items, from_date, to_date)
     normalized_x = normalize.normalize_x_items(x_items, from_date, to_date)
     normalized_youtube = normalize.normalize_youtube_items(youtube_items, from_date, to_date) if youtube_items else []
+    normalized_podcast = normalize.normalize_podcast_items(podcast_items, from_date, to_date) if podcast_items else []
     normalized_web = websearch.normalize_websearch_items(web_items, from_date, to_date) if web_items else []
 
     # Hard date filter: exclude items with verified dates outside the range
@@ -1014,24 +1132,28 @@ def main():
     # that prefers recent videos but keeps older ones for evergreen topics.
     # YouTube content has a longer shelf life than tweets/posts.
     filtered_youtube = normalized_youtube
+    filtered_podcast = normalize.filter_by_date_range(normalized_podcast, from_date, to_date) if normalized_podcast else []
     filtered_web = normalize.filter_by_date_range(normalized_web, from_date, to_date) if normalized_web else []
 
     # Score items
     scored_reddit = score.score_reddit_items(filtered_reddit)
     scored_x = score.score_x_items(filtered_x)
     scored_youtube = score.score_youtube_items(filtered_youtube) if filtered_youtube else []
+    scored_podcast = score.score_podcast_items(filtered_podcast) if filtered_podcast else []
     scored_web = score.score_websearch_items(filtered_web) if filtered_web else []
 
     # Sort items
     sorted_reddit = score.sort_items(scored_reddit)
     sorted_x = score.sort_items(scored_x)
     sorted_youtube = score.sort_items(scored_youtube) if scored_youtube else []
+    sorted_podcast = score.sort_items(scored_podcast) if scored_podcast else []
     sorted_web = score.sort_items(scored_web) if scored_web else []
 
     # Dedupe items
     deduped_reddit = dedupe.dedupe_reddit(sorted_reddit)
     deduped_x = dedupe.dedupe_x(sorted_x)
     deduped_youtube = dedupe.dedupe_youtube(sorted_youtube) if sorted_youtube else []
+    deduped_podcast = sorted_podcast  # No dedupe needed for podcasts (URLs are unique)
     deduped_web = websearch.dedupe_websearch(sorted_web) if sorted_web else []
 
     # Minimum result guarantee: if all Reddit results were filtered out but
@@ -1055,10 +1177,12 @@ def main():
     report.reddit = deduped_reddit
     report.x = deduped_x
     report.youtube = deduped_youtube
+    report.podcast = deduped_podcast
     report.web = deduped_web
     report.reddit_error = reddit_error
     report.x_error = x_error
     report.youtube_error = youtube_error
+    report.podcast_error = podcast_error
     report.web_error = web_error
 
     # Generate context snippet
@@ -1084,8 +1208,10 @@ def main():
             source_info["x_skip_reason"] = "No Bird CLI or XAI_API_KEY (Node.js 22+ needed for Bird)"
     if not has_ytdlp:
         source_info["youtube_skip_reason"] = "yt-dlp not installed — fix: brew install yt-dlp"
+    if not has_podcast:
+        source_info["podcast_skip_reason"] = "no TAVILY_API_KEY for podcast discovery"
     if not web_source:
-        source_info["web_skip_reason"] = "assistant will use WebSearch (add BRAVE_API_KEY for native search)"
+        source_info["web_skip_reason"] = "assistant will use WebSearch (add TAVILY_API_KEY for native search)"
 
     # Output result
     output_result(report, args.emit, web_needed, args.topic, from_date, to_date, missing_keys, args.days, source_info)
@@ -1127,6 +1253,16 @@ def main():
                 "author": item.channel_name,
                 "content": item.transcript_snippet[:500] if item.transcript_snippet else item.title,
                 "engagement_score": item.engagement.views if item.engagement and item.engagement.views else 0,
+                "relevance_score": item.relevance,
+            })
+        for item in deduped_podcast:
+            findings.append({
+                "source": "podcast",
+                "url": item.url,
+                "title": item.title,
+                "author": item.podcast_name,
+                "content": item.transcript_snippet[:500] if item.transcript_snippet else item.title,
+                "engagement_score": 0,
                 "relevance_score": item.relevance,
             })
         for item in deduped_web:

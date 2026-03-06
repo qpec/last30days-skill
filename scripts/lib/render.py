@@ -1,8 +1,12 @@
 """Output rendering for last30days skill."""
 
+import copy
 import json
 import os
+import re
+import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
@@ -25,19 +29,29 @@ def ensure_output_dir():
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _slugify(text: str) -> str:
+    """Convert text to a filesystem-safe slug."""
+    slug = text.lower().strip()
+    slug = re.sub(r'[^a-z0-9]+', '-', slug)
+    slug = slug.strip('-')[:50]
+    return slug or "research"
+
+
 def _assess_data_freshness(report: schema.Report) -> dict:
     """Assess how much data is actually from the last 30 days."""
     reddit_recent = sum(1 for r in report.reddit if r.date and r.date >= report.range_from)
     x_recent = sum(1 for x in report.x if x.date and x.date >= report.range_from)
     web_recent = sum(1 for w in report.web if w.date and w.date >= report.range_from)
+    podcast_recent = sum(1 for p in report.podcast if p.date and p.date >= report.range_from)
 
-    total_recent = reddit_recent + x_recent + web_recent
-    total_items = len(report.reddit) + len(report.x) + len(report.web)
+    total_recent = reddit_recent + x_recent + web_recent + podcast_recent
+    total_items = len(report.reddit) + len(report.x) + len(report.web) + len(report.podcast)
 
     return {
         "reddit_recent": reddit_recent,
         "x_recent": x_recent,
         "web_recent": web_recent,
+        "podcast_recent": podcast_recent,
         "total_recent": total_recent,
         "total_items": total_items,
         "is_sparse": total_recent < 5,
@@ -215,6 +229,29 @@ def render_compact(report: schema.Report, limit: int = 15, missing_keys: str = "
             lines.append(f"  *{item.why_relevant}*")
             lines.append("")
 
+    # Podcast items
+    if report.podcast_error:
+        lines.append("### Podcast Episodes")
+        lines.append("")
+        lines.append(f"**ERROR:** {report.podcast_error}")
+        lines.append("")
+    elif report.podcast:
+        lines.append("### Podcast Episodes")
+        lines.append("")
+        for item in report.podcast[:limit]:
+            date_str = f" ({item.date})" if item.date else ""
+
+            lines.append(f"**{item.id}** (score:{item.score}) {item.podcast_name}{date_str}")
+            lines.append(f"  {item.episode_title}")
+            lines.append(f"  {item.url}")
+            if item.transcript_snippet:
+                snippet = item.transcript_snippet[:200]
+                if len(item.transcript_snippet) > 200:
+                    snippet += "..."
+                lines.append(f"  Transcript: {snippet}")
+            lines.append(f"  *{item.why_relevant}*")
+            lines.append("")
+
     # Web items (if any - populated by the assistant)
     if report.web_error:
         lines.append("### Web Results")
@@ -288,6 +325,16 @@ def render_source_status(report: schema.Report, source_info: dict = None) -> str
         reason = source_info.get("youtube_skip_reason", "yt-dlp not installed (brew install yt-dlp)")
         lines.append(f"  ⏭️ YouTube: skipped — {reason}")
 
+    # Podcast
+    if report.podcast_error:
+        lines.append(f"  ❌ Podcast: error — {report.podcast_error}")
+    elif report.podcast:
+        with_transcripts = sum(1 for p in report.podcast if getattr(p, 'transcript_snippet', None))
+        lines.append(f"  ✅ Podcast: {len(report.podcast)} episodes ({with_transcripts} with transcripts)")
+    else:
+        reason = source_info.get("podcast_skip_reason", "no TAVILY_API_KEY for discovery")
+        lines.append(f"  ⏭️ Podcast: skipped — {reason}")
+
     # Web
     if report.web_error:
         lines.append(f"  ❌ Web: error — {report.web_error}")
@@ -327,9 +374,13 @@ def render_context_snippet(report: schema.Report) -> str:
         all_items.append((item.score, "X", item.text[:50] + "...", item.url))
     for item in report.web[:5]:
         all_items.append((item.score, "Web", item.title[:50] + "...", item.url))
+    for item in report.youtube[:5]:
+        all_items.append((item.score, "YouTube", item.title[:50] + "...", item.url))
+    for item in report.podcast[:5]:
+        all_items.append((item.score, "Podcast", item.episode_title[:50] + "...", item.url))
 
     all_items.sort(key=lambda x: -x[0])
-    for score, source, text, url in all_items[:7]:
+    for score, source, text, url in all_items[:10]:
         lines.append(f"- [{source}] {text}")
 
     lines.append("")
@@ -414,6 +465,53 @@ def render_full_report(report: schema.Report) -> str:
             lines.append(f"> {item.text}")
             lines.append("")
 
+    # YouTube section
+    if report.youtube:
+        lines.append("## YouTube Videos")
+        lines.append("")
+        for item in report.youtube:
+            lines.append(f"### {item.id}: {item.title}")
+            lines.append("")
+            lines.append(f"- **Channel:** {item.channel_name}")
+            lines.append(f"- **URL:** {item.url}")
+            lines.append(f"- **Date:** {item.date or 'Unknown'}")
+            lines.append(f"- **Score:** {item.score}/100")
+
+            if item.engagement:
+                eng = item.engagement
+                parts = []
+                if eng.views is not None:
+                    parts.append(f"{eng.views:,} views")
+                if eng.likes is not None:
+                    parts.append(f"{eng.likes:,} likes")
+                if parts:
+                    lines.append(f"- **Engagement:** {', '.join(parts)}")
+
+            if item.transcript_snippet:
+                lines.append("")
+                lines.append(f"> {item.transcript_snippet[:500]}...")
+
+            lines.append("")
+
+    # Podcast section
+    if report.podcast:
+        lines.append("## Podcast Episodes")
+        lines.append("")
+        for item in report.podcast:
+            lines.append(f"### {item.id}: {item.episode_title}")
+            lines.append("")
+            lines.append(f"- **Podcast:** {item.podcast_name}")
+            lines.append(f"- **URL:** {item.url}")
+            lines.append(f"- **Date:** {item.date or 'Unknown'}")
+            lines.append(f"- **Score:** {item.score}/100")
+            lines.append(f"- **Relevance:** {item.why_relevant}")
+
+            if item.transcript_snippet:
+                lines.append("")
+                lines.append(f"> {item.transcript_snippet[:500]}...")
+
+            lines.append("")
+
     # Web section
     if report.web:
         lines.append("## Web Results")
@@ -444,48 +542,141 @@ def render_full_report(report: schema.Report) -> str:
     return "\n".join(lines)
 
 
+def _build_full_report_dict(
+    report: schema.Report,
+    raw_openai: Optional[dict] = None,
+    raw_xai: Optional[dict] = None,
+    raw_reddit_enriched: Optional[list] = None,
+) -> dict:
+    """Build the full raw data dict with complete transcripts."""
+    d = report.to_dict()
+    if raw_openai:
+        d["raw_openai"] = raw_openai
+    if raw_xai:
+        d["raw_xai"] = raw_xai
+    if raw_reddit_enriched:
+        d["raw_reddit_enriched"] = raw_reddit_enriched
+    return d
+
+
+def _build_compact_report_dict(
+    report: schema.Report,
+    raw_openai: Optional[dict] = None,
+    raw_xai: Optional[dict] = None,
+    raw_reddit_enriched: Optional[list] = None,
+) -> dict:
+    """Build compact raw data dict with truncated transcripts."""
+    d = report.to_dict()
+
+    # Truncate YouTube transcripts
+    for yt in d.get("youtube", []):
+        snippet = yt.get("transcript_snippet", "")
+        if len(snippet) > 200:
+            yt["transcript_snippet"] = snippet[:200] + "..."
+        # Remove full transcript from compact version
+        yt.pop("transcript_full", None)
+
+    # Truncate podcast transcripts
+    for pod in d.get("podcast", []):
+        snippet = pod.get("transcript_snippet", "")
+        words = snippet.split()
+        if len(words) > 500:
+            pod["transcript_snippet"] = ' '.join(words[:500]) + "..."
+        pod.pop("transcript_full", None)
+
+    if raw_openai:
+        d["raw_openai"] = raw_openai
+    if raw_xai:
+        d["raw_xai"] = raw_xai
+    if raw_reddit_enriched:
+        d["raw_reddit_enriched"] = raw_reddit_enriched
+    return d
+
+
 def write_outputs(
     report: schema.Report,
     raw_openai: Optional[dict] = None,
     raw_xai: Optional[dict] = None,
     raw_reddit_enriched: Optional[list] = None,
-):
-    """Write all output files.
+) -> str:
+    """Write all output files to a per-run folder.
+
+    Creates a timestamped subfolder per invocation:
+        ~/.local/share/last30days/out/{topic_slug}_{YYYYMMDD_HHMMSS}/
+
+    Generates 4 output files:
+        01-raw-data-full.json   - Full data with complete transcripts
+        02-raw-data-compact.json - Truncated transcripts
+        03-report.md            - Full markdown report
+        04-summary.md           - Context snippet
 
     Args:
         report: Report data
         raw_openai: Raw OpenAI API response
         raw_xai: Raw xAI API response
         raw_reddit_enriched: Raw enriched Reddit thread data
+
+    Returns:
+        Path to the output folder as string
     """
     ensure_output_dir()
 
-    # report.json
-    with open(OUTPUT_DIR / "report.json", 'w') as f:
-        json.dump(report.to_dict(), f, indent=2)
+    # Create timestamped subfolder
+    slug = _slugify(report.topic)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    folder_name = f"{slug}_{timestamp}"
+    run_dir = OUTPUT_DIR / folder_name
+    run_dir.mkdir(parents=True, exist_ok=True)
 
-    # report.md
-    with open(OUTPUT_DIR / "report.md", 'w') as f:
+    # File 1: Full raw data (complete transcripts)
+    full_data = _build_full_report_dict(report, raw_openai, raw_xai, raw_reddit_enriched)
+    with open(run_dir / "01-raw-data-full.json", 'w', encoding='utf-8') as f:
+        json.dump(full_data, f, indent=2, ensure_ascii=False)
+
+    # File 2: Compact raw data (truncated transcripts)
+    compact_data = _build_compact_report_dict(report, raw_openai, raw_xai, raw_reddit_enriched)
+    with open(run_dir / "02-raw-data-compact.json", 'w', encoding='utf-8') as f:
+        json.dump(compact_data, f, indent=2, ensure_ascii=False)
+
+    # File 3: Full markdown report
+    with open(run_dir / "03-report.md", 'w', encoding='utf-8') as f:
         f.write(render_full_report(report))
 
-    # last30days.context.md
-    with open(OUTPUT_DIR / "last30days.context.md", 'w') as f:
+    # File 4: Summary / context snippet
+    with open(run_dir / "04-summary.md", 'w', encoding='utf-8') as f:
         f.write(render_context_snippet(report))
 
-    # Raw responses
-    if raw_openai:
-        with open(OUTPUT_DIR / "raw_openai.json", 'w') as f:
-            json.dump(raw_openai, f, indent=2)
+    # Also write to flat files for backward compatibility
+    with open(OUTPUT_DIR / "report.json", 'w', encoding='utf-8') as f:
+        json.dump(report.to_dict(), f, indent=2, ensure_ascii=False)
+    with open(OUTPUT_DIR / "report.md", 'w', encoding='utf-8') as f:
+        f.write(render_full_report(report))
+    with open(OUTPUT_DIR / "last30days.context.md", 'w', encoding='utf-8') as f:
+        f.write(render_context_snippet(report))
 
-    if raw_xai:
-        with open(OUTPUT_DIR / "raw_xai.json", 'w') as f:
-            json.dump(raw_xai, f, indent=2)
+    folder_path = str(run_dir)
+    sys.stderr.write(f"[Output] Folder: {folder_path}\n")
+    sys.stderr.flush()
 
-    if raw_reddit_enriched:
-        with open(OUTPUT_DIR / "raw_reddit_threads_enriched.json", 'w') as f:
-            json.dump(raw_reddit_enriched, f, indent=2)
+    return folder_path
 
 
 def get_context_path() -> str:
-    """Get path to context file."""
+    """Get path to context file (latest folder's summary or flat file)."""
+    # Try to find latest folder
+    ensure_output_dir()
+    try:
+        folders = sorted(
+            [d for d in OUTPUT_DIR.iterdir() if d.is_dir()],
+            key=lambda d: d.name,
+            reverse=True,
+        )
+        if folders:
+            summary = folders[0] / "04-summary.md"
+            if summary.exists():
+                return str(summary)
+    except Exception:
+        pass
+
+    # Fallback to flat file
     return str(OUTPUT_DIR / "last30days.context.md")

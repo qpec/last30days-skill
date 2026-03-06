@@ -193,7 +193,56 @@ def normalize_youtube_items(
             date_confidence="high",
             engagement=engagement,
             transcript_snippet=item.get("transcript_snippet", ""),
+            transcript_full=item.get("transcript_full", ""),
             relevance=item.get("relevance", 0.7),
+            why_relevant=item.get("why_relevant", ""),
+        ))
+
+    return normalized
+
+
+def normalize_podcast_items(
+    items: List[Dict[str, Any]],
+    from_date: str,
+    to_date: str,
+) -> List[schema.PodcastItem]:
+    """Normalize raw podcast items to schema.
+
+    Args:
+        items: Raw podcast items from search
+        from_date: Start of date range
+        to_date: End of date range
+
+    Returns:
+        List of PodcastItem objects
+    """
+    normalized = []
+
+    for item in items:
+        # Parse engagement
+        engagement = None
+        eng_raw = item.get("engagement")
+        if isinstance(eng_raw, dict):
+            engagement = schema.Engagement(
+                views=eng_raw.get("views"),
+                likes=eng_raw.get("likes"),
+            )
+
+        date_str = item.get("date")
+        date_confidence = item.get("date_confidence", "med")
+
+        normalized.append(schema.PodcastItem(
+            id=item.get("id", ""),
+            title=item.get("title", ""),
+            url=item.get("url", ""),
+            podcast_name=item.get("podcast_name", ""),
+            episode_title=item.get("episode_title", ""),
+            date=date_str,
+            date_confidence=date_confidence,
+            engagement=engagement,
+            transcript_snippet=item.get("transcript_snippet", ""),
+            transcript_full=item.get("transcript_full", ""),
+            relevance=item.get("relevance", 0.6),
             why_relevant=item.get("why_relevant", ""),
         ))
 

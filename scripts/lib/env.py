@@ -56,10 +56,14 @@ def get_config() -> Dict[str, Any]:
         ('OPENROUTER_API_KEY', None),
         ('PARALLEL_API_KEY', None),
         ('BRAVE_API_KEY', None),
+        ('TAVILY_API_KEY', None),
+        ('LISTEN_NOTES_API_KEY', None),
         ('OPENAI_MODEL_POLICY', 'auto'),
         ('OPENAI_MODEL_PIN', None),
         ('XAI_MODEL_POLICY', 'latest'),
         ('XAI_MODEL_PIN', None),
+        ('AUTH_TOKEN', None),
+        ('CT0', None),
     ]
 
     config = {}
@@ -97,18 +101,20 @@ def get_available_sources(config: Dict[str, Any]) -> str:
 
 def has_web_search_keys(config: Dict[str, Any]) -> bool:
     """Check if any web search API keys are configured."""
-    return bool(config.get('OPENROUTER_API_KEY') or config.get('PARALLEL_API_KEY') or config.get('BRAVE_API_KEY'))
+    return bool(config.get('OPENROUTER_API_KEY') or config.get('PARALLEL_API_KEY') or config.get('BRAVE_API_KEY') or config.get('TAVILY_API_KEY'))
 
 
 def get_web_search_source(config: Dict[str, Any]) -> Optional[str]:
     """Determine the best available web search backend.
 
-    Priority: Parallel AI > Brave > OpenRouter/Sonar Pro
+    Priority: Parallel AI > Tavily > Brave > OpenRouter/Sonar Pro
 
-    Returns: 'parallel', 'brave', 'openrouter', or None
+    Returns: 'parallel', 'tavily', 'brave', 'openrouter', or None
     """
     if config.get('PARALLEL_API_KEY'):
         return 'parallel'
+    if config.get('TAVILY_API_KEY'):
+        return 'tavily'
     if config.get('BRAVE_API_KEY'):
         return 'brave'
     if config.get('OPENROUTER_API_KEY'):

@@ -111,6 +111,8 @@ def is_bird_authenticated() -> Optional[str]:
             ["node", str(_BIRD_SEARCH_MJS), "--whoami"],
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=15,
         )
         if result.returncode == 0 and result.stdout.strip():
@@ -186,6 +188,8 @@ def _run_bird_search(query: str, count: int, timeout: int) -> Dict[str, Any]:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             preexec_fn=preexec,
         )
 
@@ -213,11 +217,21 @@ def _run_bird_search(query: str, count: int, timeout: int) -> Dict[str, Any]:
             except (ImportError, Exception):
                 pass
 
+        output = stdout.strip() if stdout else ""
+
+        # On Windows, Node.js may exit non-zero due to libuv assertion
+        # errors during cleanup, even when results were returned successfully.
+        # Try to parse stdout first before treating as error.
+        if output and output.startswith('['):
+            try:
+                return json.loads(output)
+            except json.JSONDecodeError:
+                pass
+
         if proc.returncode != 0:
             error = stderr.strip() if stderr else "Bird search failed"
             return {"error": error, "items": []}
 
-        output = stdout.strip() if stdout else ""
         if not output:
             return {"items": []}
 
@@ -312,6 +326,8 @@ def search_handles(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 preexec_fn=preexec,
             )
 
