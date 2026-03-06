@@ -388,8 +388,45 @@ When writing research reports to file:
 2. **Executive summary:** 2-3 sentences capturing the main insight
 3. **Thematic sections:** Organized by theme, not by source
 4. **Direct quotes:** Use `>` blockquotes with `@handle` or `r/subreddit` attribution
-5. **Source tables:** ALL sources with URLs at the bottom, organized by category
-6. **Footer:** Generation method and date
+5. **Authority Check table:** Validate key claims (see format below)
+6. **Source tables:** ALL sources with URLs at the bottom, organized by category with tier labels
+7. **Footer:** Generation method and date
+
+### Authority Check Table
+
+Include after the executive summary or as a consolidated table:
+
+| # | Claim | Community Source | Authority Source | Status |
+|---|-------|-----------------|------------------|--------|
+| 1 | Dev postings -70% from peak | @aitoolshaven | FRED: -67% confirmed | ✅ Confirmed |
+| 2 | Junior roles -20% | @neurawebtech | BLS: -15% entry SWE | ⚠️ Partially |
+| 3 | AI/ML 56% premium | @grok | Levels.fyi: 42% premium | ⚠️ Overstated |
+| 4 | India hiring +9% | @moneycontrolcom | No independent source | ❓ Unverified |
+
+Status values: ✅ Confirmed, ⚠️ Partially, ❌ Contradicted, ❓ Unverified
+
+### Source Tier System
+
+Every source gets a tier label in source tables:
+
+| Tier | Definition | Examples |
+|------|-----------|----------|
+| **Tier 1** | Government data, peer-reviewed research | BLS, FRED, CBS.nl, Eurostat |
+| **Tier 2** | Industry reports with methodology | McKinsey, Gartner, Stack Overflow Survey |
+| **Tier 3** | Quality journalism with editorial standards | Bloomberg, WSJ, FD, TechCrunch |
+| **Tier 4** | Community signal | X, Reddit, YouTube, Podcasts |
+
+### Section Confidence Ratings
+
+Each thematic section gets a confidence badge:
+
+| Rating | Criteria |
+|--------|----------|
+| **HIGH** | Backed by 2+ Tier 1-2 sources |
+| **MEDIUM** | Backed by 1 Tier 1-2 source or 3+ Tier 3 sources |
+| **LOW** | Community signal only (Tier 4) |
+
+Format: `**Confidence: HIGH** — Corroborated by BLS and Indeed Hiring Lab data`
 
 **File naming:** `YYYY-MM-DD-{topic-slug}.md` in project root (date-prefixed for chronological sorting)
 
