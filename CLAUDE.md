@@ -114,7 +114,59 @@ Claude Code synthesizes directly in the same session. After all parallel Bash ca
 
 **Cost model:** Only external API costs apply (~$0.02/call for OpenAI normalization). Bird/X search is free. Tavily has a free tier. Everything runs in the Claude Code Opus session.
 
-### 4. Write Report to File
+### 4. Extract Testable Claims
+
+After synthesis, identify **3-7 testable claims** from the Phase 1 data. Each claim must be:
+- **Specific** — includes a number, trend direction, or named entity
+- **Verifiable** — can be checked against external data
+
+Example:
+```
+1. "Software dev postings down 70% from 2022 peak" — @aitoolshaven
+2. "Junior developer roles down 20% since 2022" — @neurawebtech
+3. "AI/ML engineers command 56% salary premium" — @grok
+4. "India tech hiring up 9% MoM in March 2026" — @moneycontrolcom
+5. "550K+ tech layoffs since 2022" — @glynch1234
+```
+
+### 5. Validate Against Authoritative Sources (Phase 2)
+
+Launch **3-5 parallel validation searches** using Claude's `WebSearch` tool (not the Python script). Each search targets 1-2 claims from Step 4.
+
+**Search strategy per claim — run 3-4 targeted searches:**
+1. Government/statistical source (BLS, FRED, Eurostat, CBS)
+2. Industry report (McKinsey, Gartner, Stack Overflow survey)
+3. Quality journalism (Bloomberg, WSJ, TechCrunch)
+4. Job market data platform (Indeed Hiring Lab, LinkedIn Economic Graph)
+
+Use `WebFetch` to retrieve full data when a search result looks promising.
+
+**Validation output format per claim:**
+```
+THEME: "Junior developer roles down 20% since 2022"
+STATUS: PARTIALLY CONFIRMED
+AUTHORITATIVE SOURCES:
+- BLS: Software dev employment grew 2.1% in 2024 but QA roles declined 8% (bls.gov/ooh)
+- Indeed Hiring Lab: Entry-level tech postings down 34% from 2022 peak (hiringlab.org)
+- Stack Overflow 2025: 62% of respondents report fewer junior openings
+NUANCE: The 20% figure appears US-specific and varies by sub-role
+```
+
+**Status values:**
+- ✅ Confirmed — authoritative source corroborates
+- ⚠️ Partially — directionally correct, numbers differ
+- ❌ Contradicted — authoritative source disagrees
+- ❓ Unverified — no authoritative source found
+
+### 6. Merge Validation into Report
+
+Incorporate Phase 2 findings into the final report:
+- Add an **Authority Check table** (see Report Writing Standards)
+- Assign **source tiers** to all sources
+- Add **confidence ratings** to each thematic section
+- Weave authoritative data into the narrative alongside community signal
+
+### 7. Write Report to File
 
 When the user asks for a report/rapportage:
 - Write to a date-prefixed `.md` file in the project root (e.g., `2026-02-28-topic.md`)
