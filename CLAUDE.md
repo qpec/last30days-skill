@@ -352,6 +352,32 @@ Three-factor scoring (0-100):
 1. **Tavily** — domain-filtered to podcast platforms (Apple, Spotify, etc.)
 2. **Listen Notes API** — direct search + transcript enrichment (optional)
 
+### Authoritative Source Priority (Phase 2 Validation)
+
+| Category | Sources |
+|----------|---------|
+| Government/Stats | BLS.gov, FRED (St. Louis Fed), Eurostat, OECD, Census.gov |
+| Job Market Data | Indeed Hiring Lab, LinkedIn Economic Graph, Glassdoor, Levels.fyi |
+| Industry Analysts | McKinsey, Gartner, Deloitte, Forrester, IDC |
+| Industry Surveys | Stack Overflow Developer Survey, JetBrains State of Dev, GitHub Octoverse |
+| Quality Journalism | Bloomberg, WSJ, Reuters, TechCrunch, The Information, Ars Technica |
+| Academic/Think Tank | Brookings, Stanford HAI, MIT CSAIL, World Economic Forum |
+
+### Netherlands Authoritative Sources (When NL-Relevant)
+
+Activated when the topic mentions: Netherlands, Dutch, Holland, NL, Amsterdam, Eindhoven, Rotterdam, Den Haag, Utrecht, Brainport, or any Dutch city/company.
+
+| Category | Sources |
+|----------|---------|
+| Government/Stats | CBS.nl (Centraal Bureau voor de Statistiek), UWV Arbeidsmarktinformatie, Rijksoverheid.nl |
+| Labor Market | UWV Barometer Arbeidsmarkt, CBS StatLine (ICT sector) |
+| Industry Bodies | Nederland ICT, Dutch Digital, NLdigital, Brainport Eindhoven |
+| Salary/Job Data | Glassdoor.nl, Intermediair Salarisgids, Nationale Vacaturebank, Indeed.nl |
+| Industry Reports | ABN AMRO sectorrapport IT, ING Economisch Bureau ICT, Computable.nl |
+| Journalism | FD (Financieele Dagblad), NRC, Tweakers.net, AG Connect, Computable.nl |
+| Research | SER (Sociaal-Economische Raad), TNO, TU Delft, Rathenau Instituut |
+| Recruitment | Randstad ICT, Yacht, Hays NL salary guide, Robert Half NL |
+
 ---
 
 ## Report Writing Standards
